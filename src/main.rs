@@ -16,12 +16,22 @@ fn main() {
 }
 
 fn dispatch(parsed: cli::Cli) -> Result<()> {
+    if matches!(parsed.command, Some(cli::Command::Gui)) {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(include_str!("../gui/pttman_gui.py"))
+            .arg(std::env::current_exe()?)
+            .exec();
+        return Err(err.into());
+    }
     let overrides = cli::overrides(&parsed)?;
     let config = config::Config::build(&overrides, config::default_conf_path().as_deref())?;
     let pactl = pactl::RealPactl;
 
     match &parsed.command {
         Some(cli::Command::GetDefaultSource) => config::print_default_source(),
+        Some(cli::Command::Gui) => unreachable!(),
         Some(cli::Command::InstallService) => service::install(),
         Some(cli::Command::ListSources) => run_list_sources(&pactl, &config),
         Some(cli::Command::Mute) => run_client_or_direct(&pactl, &config, daemon::Action::Mute),

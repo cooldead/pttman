@@ -12,7 +12,10 @@ use crate::socket;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub all_sources: bool,
+    pub press_sound: Option<PathBuf>,
+    pub release_sound: Option<PathBuf>,
     pub ptt_hold_timeout: Option<Duration>,
+    pub sound_volume: u8,
     pub source: Option<String>,
     pub start_muted: bool,
 }
@@ -21,7 +24,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             all_sources: false,
+            press_sound: None,
+            release_sound: None,
             ptt_hold_timeout: None,
+            sound_volume: 100,
             source: None,
             start_muted: true,
         }
@@ -78,6 +84,24 @@ impl Config {
 
     fn apply_flag(&mut self, flag: &str, value: &str, path: &Path) -> Result<()> {
         match flag {
+            "--sound-volume" => {
+                self.sound_volume = value
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|volume| *volume <= 100)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "--sound-volume must be an integer from 0 to 100 in {}",
+                            path.display()
+                        )
+                    })?;
+            }
+            "--release-sound" => {
+                self.release_sound = (value != "off").then(|| PathBuf::from(value));
+            }
+            "--press-sound" => {
+                self.press_sound = (value != "off").then(|| PathBuf::from(value));
+            }
             "--all-sources" => {
                 self.all_sources = parse_bool_strict(value).ok_or_else(|| {
                     anyhow!(

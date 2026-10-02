@@ -32,6 +32,8 @@ pub struct Cli {
 pub enum Command {
     /// Print the default source from the config file
     GetDefaultSource,
+    /// Open the desktop controls (requires Python 3 and GTK 4)
+    Gui,
     /// Install and enable the service (systemd or OpenRC)
     InstallService,
     /// List available audio sources

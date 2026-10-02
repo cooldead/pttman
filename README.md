@@ -2,6 +2,94 @@
 
 Reliable push-to-talk and mic-mute for PipeWire.
 
+## Desktop GUI (local fork)
+
+This fork adds a GTK 4 desktop window and optional sounds when push-to-talk
+begins and ends. The Rust binary embeds the GUI script; it needs Python 3, PyGObject,
+and GTK 4 at runtime. Sound playback needs `paplay` for WAV/OGG/FLAC and `ffplay` (FFmpeg) for MP3.
+On Arch/CachyOS these are provided by `python`, `python-gobject`, `gtk4`, and
+`libpulse`; install `ffmpeg` for MP3.
+
+```sh
+cargo build --release
+./run-gui.sh
+# Or run the binary directly:
+./target/release/pttman gui
+```
+
+1. Choose a microphone or **All microphones**.
+2. Optionally enable the **Press sound** and **Release sound** options, select an MP3, WAV,
+   OGG, or FLAC file, and preview it. Use a short sound; it plays through the
+   default audio output and may be picked up by your microphone on speakers.
+3. Adjust **Sound volume** (0–100%) for both cues and previews, then save settings. Set a maximum talk time such as `120s` to recover from missed key releases,
+   or use `off` to disable the timeout.
+4. Click **Start control** if the daemon is stopped.
+5. Click **Configure global shortcut…** and choose a key in the desktop dialog
+   (F9 is suggested). Hold it to talk while another application is focused.
+
+Global shortcuts use the XDG GlobalShortcuts portal, including its activation
+and deactivation signals. KDE Plasma supports this on Wayland. Other desktops
+need a compatible portal backend. Mouse buttons can be mapped to the chosen
+key using mouse software; the GUI does not capture raw mouse devices.
+The desktop remembers the binding, and the GUI reconnects on subsequent
+launches. The global shortcut stays active when the window is hidden in the tray.
+Existing external `pttman press` / `pttman release` bindings still work without
+the GUI.
+
+The window also has a hold-to-talk button and explicit mute/unmute controls.
+Losing window focus releases the GUI button without cancelling an active
+global shortcut. Closing the window hides it in the tray by default and keeps the global shortcut
+active. Quit from the tray menu to exit and release any hold. If the GUI started
+the daemon, it mutes and stops that daemon on exit; an existing service keeps
+running. **Save settings** reloads the running daemon.
+
+Use this fork's binary for both the GUI and the daemon: the upstream daemon
+does not recognize the new sound setting. A service installed before this fork
+must be updated to run the new binary and restarted before saving GUI settings.
+
+The sound setting in `pttman.conf` is:
+
+```text
+--press-sound=/absolute/path/to/press.wav
+--release-sound=/absolute/path/to/release.wav
+--sound-volume=100
+```
+
+Set either sound to `off` to disable it (the default). The daemon plays the sound
+after successfully applying a new press, without waiting for playback. Repeated
+key-down events do not retrigger it. The release sound plays after a successful
+mute at the end of a hold; duplicate releases stay silent. Each sound has its
+own player so releasing quickly still plays the release cue. Overlapping
+instances of the same cue are suppressed, and
+playback failures do not block muting. Sound requires the daemon; the CLI's
+direct fallback does not play it.
+
+### Tray and configuration
+
+The KDE tray icon is a caged red warning light. It glows red when any managed
+microphone is unmuted, stays dark red when all managed microphones are muted,
+and turns amber if the state cannot be read. It reads actual microphone state
+about every 300 ms, including changes made outside the GUI. Hover for status,
+click to open settings, or right-click for mute, unmute, toggle, resync, and quit.
+
+The GUI exposes every daemon setting: a specific microphone, all microphones,
+or the system default; startup mute; timeout in milliseconds/seconds/minutes/hours
+or `off`; both sound files; and cue volume. It also includes systemd service
+start/stop/restart, install/uninstall, and enable/disable at login. Service controls
+are for systemd desktops; the existing CLI still supports OpenRC.
+
+**Desktop** settings control close-to-tray and starting the GUI at login. Login
+startup opens directly in the tray when a tray host is available. The tray uses
+KDE's StatusNotifierItem protocol and a D-Bus menu, without extra Python packages.
+If no tray host is available, the window remains accessible.
+
+Additional GUI checks:
+
+```sh
+python3 -m unittest discover -s gui -p 'test_*.py'
+python3 gui/smoke_test.py # needs a desktop session; briefly opens a window
+```
+
 `pttman` is a small user service that keeps microphone mute state predictable:
 
 - Rapid mute, unmute, and toggle key presses are serialized through a Unix

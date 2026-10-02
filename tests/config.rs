@@ -28,6 +28,20 @@ fn config_reads_source() {
 }
 
 #[test]
+fn config_reads_and_disables_press_sound() {
+    let mut file = NamedTempFile::new().unwrap();
+    std::io::Write::write_all(&mut file, b"--press-sound=/tmp/my sound.wav\n").unwrap();
+    let config = Config::build(&cli::Overrides::default(), Some(file.path())).unwrap();
+    assert_eq!(
+        config.press_sound.unwrap(),
+        std::path::Path::new("/tmp/my sound.wav")
+    );
+    std::io::Write::write_all(&mut file, b"--press-sound=off\n").unwrap();
+    let config = Config::build(&cli::Overrides::default(), Some(file.path())).unwrap();
+    assert!(config.press_sound.is_none());
+}
+
+#[test]
 fn config_reads_ptt_hold_timeout() {
     let mut file = NamedTempFile::new().unwrap();
     std::io::Write::write_all(&mut file, b"--ptt-hold-timeout=2m\n").unwrap();
@@ -134,4 +148,40 @@ fn no_start_muted_overrides_default() {
     let cli = Cli::try_parse_from(["pttman", "--no-start-muted"]).unwrap();
     let config = Config::build(&cli::overrides(&cli).unwrap(), None).unwrap();
     assert!(!config.start_muted);
+}
+
+#[test]
+fn config_reads_and_disables_release_sound_independently() {
+    let mut file = NamedTempFile::new().unwrap();
+    std::io::Write::write_all(
+        &mut file,
+        b"--press-sound=/press.wav\n--release-sound=/release sound.wav\n",
+    )
+    .unwrap();
+    let config = Config::build(&cli::Overrides::default(), Some(file.path())).unwrap();
+    assert_eq!(
+        config.release_sound.unwrap(),
+        std::path::Path::new("/release sound.wav")
+    );
+    std::io::Write::write_all(&mut file, b"--release-sound=off\n").unwrap();
+    let config = Config::build(&cli::Overrides::default(), Some(file.path())).unwrap();
+    assert!(config.release_sound.is_none());
+    assert!(config.press_sound.is_some());
+}
+
+#[test]
+fn sound_volume_defaults_and_validates_percentage() {
+    assert_eq!(Config::default().sound_volume, 100);
+    for value in ["0", "35", "100", "101", "-1", "1.5", "loud"] {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), format!("--sound-volume={value}\n")).unwrap();
+        let result = Config::build(&cli::Overrides::default(), Some(file.path()));
+        if let Ok(volume) = value.parse::<u8>() {
+            if volume <= 100 {
+                assert_eq!(result.unwrap().sound_volume, volume);
+                continue;
+            }
+        }
+        assert!(result.is_err(), "accepted {value}");
+    }
 }

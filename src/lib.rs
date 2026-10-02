@@ -8,3 +8,4 @@ pub mod service;
 pub mod service_files;
 pub mod signals;
 pub mod socket;
+pub mod sound;

@@ -72,6 +72,11 @@ pub struct State {
     pub default_mute: bool,
     pub last_applied_mute: HashMap<String, bool>,
     pub per_source_desired: HashMap<String, bool>,
+    pub press_sound: Option<std::path::PathBuf>,
+    pub release_sound: Option<std::path::PathBuf>,
+    pub release_sound_player: Arc<Mutex<crate::sound::Player>>,
+    pub sound_volume: u8,
+    pub sound_player: Arc<Mutex<crate::sound::Player>>,
     pub ptt_active: bool,
     pub ptt_hold_expires_at: Option<Instant>,
     pub ptt_hold_timeout: Option<Duration>,
@@ -95,6 +100,11 @@ impl State {
             default_mute: config.start_muted,
             last_applied_mute: HashMap::new(),
             per_source_desired: HashMap::new(),
+            press_sound: config.press_sound.clone(),
+            release_sound: config.release_sound.clone(),
+            release_sound_player: Default::default(),
+            sound_volume: config.sound_volume,
+            sound_player: Arc::new(Mutex::new(crate::sound::Player::default())),
             ptt_active: false,
             ptt_hold_expires_at: None,
             ptt_hold_timeout: config.ptt_hold_timeout,
@@ -124,15 +134,18 @@ impl State {
 
     pub fn reload_config(&mut self, pactl: &dyn PactlRunner) -> Result<()> {
         info!("Reloading config...");
-        if self.cli_source.is_some() || self.cli_all_sources {
-            info!("CLI flags take precedence, keeping current settings.");
-            return Ok(());
-        }
         let config = config::Config::build(
             &Overrides::default(),
             config::default_conf_path().as_deref(),
         )?;
+        self.sound_volume = config.sound_volume;
+        self.press_sound = config.press_sound.clone();
+        self.release_sound = config.release_sound.clone();
         self.set_ptt_hold_timeout(config.ptt_hold_timeout);
+        if self.cli_source.is_some() || self.cli_all_sources {
+            info!("CLI flags take precedence, keeping current settings.");
+            return Ok(());
+        }
         if let Some(source) = config.source {
             let new_sources = vec![source];
             self.auto_discover = false;
@@ -196,14 +209,32 @@ impl State {
                 self.apply_mute(pactl, &sources, false)?;
             }
             Action::Press => {
+                let first_press = !self.ptt_active;
                 self.ptt_active = true;
                 self.arm_ptt_hold_timeout();
                 self.apply_mute(pactl, &sources, false)?;
+                if first_press && !sources.is_empty() {
+                    if let Some(path) = &self.press_sound {
+                        self.sound_player
+                            .lock()
+                            .expect("sound mutex poisoned")
+                            .play(path, self.sound_volume);
+                    }
+                }
             }
             Action::Release => {
+                let was_active = self.ptt_active;
                 self.ptt_active = false;
                 self.clear_ptt_hold_timeout();
                 self.apply_mute(pactl, &sources, true)?;
+                if was_active && !sources.is_empty() {
+                    if let Some(path) = &self.release_sound {
+                        self.release_sound_player
+                            .lock()
+                            .expect("sound mutex poisoned")
+                            .play(path, self.sound_volume);
+                    }
+                }
             }
             Action::Resync => self.reapply_desired_state(pactl)?,
             Action::Toggle => {
@@ -443,6 +474,16 @@ pub fn run(
             Err(err) => warn!("socket receive failed: {}", err),
         }
         let mut state = state.lock().expect("state mutex poisoned");
+        state
+            .sound_player
+            .lock()
+            .expect("sound mutex poisoned")
+            .reap();
+        state
+            .release_sound_player
+            .lock()
+            .expect("sound mutex poisoned")
+            .reap();
         if let Err(err) = state.enforce_ptt_hold_timeout(pactl) {
             warn!("PTT hold timeout failed: {:#}", err);
         }
