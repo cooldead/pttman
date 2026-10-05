@@ -1,5 +1,7 @@
 """Desktop controls embedded in `pttman gui`. Requires PyGObject and GTK 4."""
 import concurrent.futures
+import fcntl
+import glob
 import json
 import os
 from pathlib import Path
@@ -24,8 +26,40 @@ SHORTCUTS = "org.freedesktop.portal.GlobalShortcuts"
 SHORTCUT_ENABLED = CONFIG.parent / "pttman-gui-shortcut-enabled"
 GUI_PREFS = CONFIG.parent / "pttman-gui.json"
 AUTOSTART = CONFIG.parent / "autostart/io.github.mwolson.pttman.desktop"
-# Shortcut keys can chatter release/press ~20-50ms apart mid-hold; a re-press inside this window continues the hold.
-RELEASE_DEBOUNCE_MS = 100
+# Shortcut keys (e.g. a wireless mouse button mapped to a key) can drop out for 100-250ms mid-hold; a re-press inside this window continues the hold.
+RELEASE_DEBOUNCE_MS = 300
+# KDE ends a held global shortcut when any other key is released, so a Deactivated signal is
+# checked against the physical key and the hold continues until the key really comes up.
+KEY_POLL_MS = 25
+EVIOCGKEY = (2 << 30) | (96 << 16) | (ord("E") << 8) | 0x18
+EVDEV_KEYS = {**{f"F{n}": 58 + n for n in range(1, 11)}, "F11": 87, "F12": 88,
+              **{f"F{n}": 170 + n for n in range(13, 25)},
+              "Insert": 110, "Pause": 119, "Print": 99, "ScrollLock": 70, "Space": 57}
+
+
+def trigger_key(description):
+    return EVDEV_KEYS.get(description.replace(" ", "").split("+")[-1])
+
+
+def key_down(code):
+    """True if any readable input device reports the key held; False if none do or none are readable."""
+    if code is None:
+        return False
+    for path in glob.glob("/dev/input/event*"):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            keys = bytearray(96)
+            fcntl.ioctl(fd, EVIOCGKEY, keys)
+            if keys[code // 8] >> (code % 8) & 1:
+                return True
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+    return False
 
 
 def playback_command(path, volume=100):
@@ -87,6 +121,8 @@ class GlobalShortcut:
         self.edge, self.report = edge, report
         self.ready = ready
         self.pending = False
+        self.key = None
+        self.key_watch = None
         self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self.session = None
         self.bus.signal_subscribe(PORTAL, SHORTCUTS, None, OBJECT, None,
@@ -156,30 +192,59 @@ class GlobalShortcut:
         shortcuts = results.get("shortcuts", [])
         for name, props in shortcuts:
             if name == "talk":
-                self.report("Global shortcut: " + props.get("trigger_description", "configured"))
+                trigger = props.get("trigger_description", "")
+                self.key = trigger_key(trigger)
+                self.report("Global shortcut: " + (trigger or "configured"))
                 self.ready()
                 return
+        self.key = None
         self.report("No shortcut assigned. Try configuring it again.")
 
     def signal(self, bus, sender, path, interface, signal, params, *unused):
         data = params.unpack()
         if data[0] != self.session:
             return
-        if signal in ("Activated", "Deactivated") and data[1] == "talk":
-            self.edge("global", signal == "Activated")
+        if signal == "Activated" and data[1] == "talk":
+            self.stop_key_watch()
+            self.edge("global", True)
+        elif signal == "Deactivated" and data[1] == "talk":
+            self.deactivated()
         elif signal == "ShortcutsChanged":
             self.bound({"shortcuts": data[1]})
+
+    def deactivated(self):
+        if self.key_watch:
+            return
+        if key_down(self.key):
+            print("shortcut deactivated while key still held; holding", file=sys.stderr, flush=True)
+            self.key_watch = GLib.timeout_add(KEY_POLL_MS, self.poll_key)
+        else:
+            self.edge("global", False)
+
+    def poll_key(self):
+        if key_down(self.key):
+            return True
+        self.key_watch = None
+        self.edge("global", False)
+        return False
+
+    def stop_key_watch(self):
+        if self.key_watch:
+            GLib.source_remove(self.key_watch)
+            self.key_watch = None
 
     def closed(self, *args):
         # Ignore a delayed Closed signal from a session we replaced.
         if args[2] == self.session:
             self.session = None
+            self.stop_key_watch()
             self.edge("global", False)
             self.report("Global shortcut session ended. Configure it again.")
 
     def close(self):
         if self.session:
             session, self.session = self.session, None
+            self.stop_key_watch()
             self.edge("global", False)
             self.bus.call(PORTAL, session, "org.freedesktop.portal.Session", "Close",
                           None, None, Gio.DBusCallFlags.NONE, -1, None, None)
@@ -657,6 +722,8 @@ class App(Gtk.Application):
         return True
 
     def edge(self, origin, pressed):
+        print(f"edge {origin} {'down' if pressed else 'up'} pending_release={self.pending_release is not None}",
+              file=sys.stderr, flush=True)
         before = bool(self.held)
         if pressed:
             self.held.add(origin)

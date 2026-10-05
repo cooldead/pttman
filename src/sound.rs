@@ -28,6 +28,7 @@ impl Player {
     pub fn play(&mut self, path: &Path, volume: u8) {
         self.reap();
         if self.child.is_some() {
+            tracing::info!("PTT sound skipped: previous sound still playing");
             return;
         }
         match playback_command(path, volume)

@@ -116,7 +116,40 @@ class InputTests(unittest.TestCase):
                               ("/session/ours", "talk")]:
             params = gui.GLib.Variant("(osta{sv})", (session, name, 0, {}))
             gui.GlobalShortcut.signal(portal, None, None, None, None, "Deactivated", params)
+        portal.deactivated.assert_called_once_with()
+
+    def portal(self):
+        portal = Mock(key=67, key_watch=None)
+        portal.poll_key = lambda: gui.GlobalShortcut.poll_key(portal)
+        return portal
+
+    def test_deactivated_while_key_still_held_waits_for_physical_release(self):
+        portal = self.portal()
+        timers = []
+        with patch.object(gui, "key_down", return_value=True), \
+             patch.object(gui.GLib, "timeout_add", lambda delay, callback: timers.append(callback) or 1):
+            gui.GlobalShortcut.deactivated(portal)
+            gui.GlobalShortcut.deactivated(portal)
+            self.assertTrue(timers[0]())
+        portal.edge.assert_not_called()
+        self.assertEqual(len(timers), 1)
+        with patch.object(gui, "key_down", return_value=False):
+            self.assertFalse(timers[0]())
         portal.edge.assert_called_once_with("global", False)
+        self.assertIsNone(portal.key_watch)
+
+    def test_deactivated_releases_when_key_is_up_or_unreadable(self):
+        portal = self.portal()
+        with patch.object(gui, "key_down", return_value=False):
+            gui.GlobalShortcut.deactivated(portal)
+        portal.edge.assert_called_once_with("global", False)
+
+    def test_trigger_descriptions_map_to_evdev_codes(self):
+        self.assertEqual(gui.trigger_key("F9"), 67)
+        self.assertEqual(gui.trigger_key("Ctrl+F12"), 88)
+        self.assertEqual(gui.trigger_key("F13"), 183)
+        self.assertIsNone(gui.trigger_key("Mouse Button 8"))
+        self.assertFalse(gui.key_down(None))
 
 
 if __name__ == "__main__":
